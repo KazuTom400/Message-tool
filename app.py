@@ -6,8 +6,8 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 import io
 import re
-import base64
 import os
+import fitz  # PyMuPDF: PDFを画像に変換するために使用
 
 # --- 1. フォント設定 ---
 FONT_FILE = "ipaexg.ttf" 
@@ -18,12 +18,11 @@ def register_font():
         try:
             pdfmetrics.registerFont(TTFont(FONT_NAME, FONT_FILE))
             return True
-        except Exception:
+        except:
             return False
     return False
 
 HAS_FONT = register_font()
-# フォントがない場合は標準のHelveticaを使用（日本語は表示されません）
 USED_FONT = FONT_NAME if HAS_FONT else "Helvetica"
 
 # --- 2. ページ設定 ---
@@ -45,18 +44,13 @@ input_text = st.text_area(
     height=250
 )
 
-# 改行2回以上を区切りにする
-messages = re.split(r'\n{2,}', input_text.strip()) if input_text.strip() else []
-
 # --- 5. 文字の折り返し計算ロジック ---
 def wrap_text(text, max_width_pt, f_name, f_size):
-    """フォントサイズとカード幅から、物理的な横幅を計算して折り返す"""
     lines = []
     for paragraph in text.split('\n'):
         current_line = ""
         for char in paragraph:
             test_line = current_line + char
-            # pdfmetrics.stringWidthで実際の描画幅(pt)を取得
             w = pdfmetrics.stringWidth(test_line, f_name, f_size)
             if w <= max_width_pt:
                 current_line = test_line
@@ -72,7 +66,6 @@ def create_card_pdf(msg_list, w_mm, h_mm, f_size):
     c = canvas.Canvas(buffer, pagesize=A4)
     page_w, page_h = A4
     w_pt, h_pt = w_mm * mm, h_mm * mm
-    
     cols = int(page_w // w_pt)
     rows = int(page_h // h_pt)
     
@@ -80,7 +73,6 @@ def create_card_pdf(msg_list, w_mm, h_mm, f_size):
         return None
 
     x, y = 0, page_h - h_pt
-    # カードの端ギリギリだと切れるため、左右に計10mm(片側5mm)の余白を設ける
     margin_pt = 5 * mm 
     max_text_width = w_pt - (margin_pt * 2)
     
@@ -89,10 +81,7 @@ def create_card_pdf(msg_list, w_mm, h_mm, f_size):
         c.rect(x, y, w_pt, h_pt)
         c.setFont(USED_FONT, f_size)
         
-        # 動的な折り返し処理の実行
         display_lines = wrap_text(msg, max_text_width, USED_FONT, f_size)
-
-        # 垂直中央揃え（行間を考慮した計算）
         total_text_h = len(display_lines) * f_size * line_spacing
         start_y = y + (h_pt + total_text_h)/2 - f_size
         
@@ -112,29 +101,40 @@ def create_card_pdf(msg_list, w_mm, h_mm, f_size):
     buffer.seek(0)
     return buffer
 
-# --- 7. メイン表示エリア ---
-if messages:
-    pdf_buffer = create_card_pdf(messages, card_width, card_height, font_size)
-    if pdf_buffer:
-        st.header("2. プレビュー & 保存")
-        st.info(f"合計 {len(messages)} 枚のカードを作成しました。")
+# --- 7. 作成実行エリア ---
+st.header("2. プレビュー & 保存")
+
+# 作成ボタンの設置
+if st.button("🛠️ メッセージカードを作成する", type="primary"):
+    if input_text.strip():
+        messages = re.split(r'\n{2,}', input_text.strip())
+        pdf_buffer = create_card_pdf(messages, card_width, card_height, font_size)
         
-        # 【修正】primary=True を type="primary" に変更
-        st.download_button(
-            label="📄 PDFを保存する",
-            data=pdf_buffer.getvalue(), # getvalue()でバイトデータとして渡す
-            file_name="message_cards.pdf",
-            mime="application/pdf",
-            type="primary"
-        )
-        
-        # プレビュー表示の改善（ブラウザによっては表示されない場合があります）
-        try:
-            base64_pdf = base64.b64encode(pdf_buffer.getvalue()).decode('utf-8')
-            # プレビューが見られない場合は、iframeの代わりにobjectタグを試す
-            pdf_display = f'<object data="data:application/pdf;base64,{base64_pdf}" width="100%" height="600" type="application/pdf"></object>'
-            st.markdown(pdf_display, unsafe_allow_html=True)
-        except Exception:
-            st.warning("プレビューが読み込めない場合は、上の保存ボタンを押してファイルを確認してください。")
+        if pdf_buffer:
+            # --- プレビュー用画像変換 (PyMuPDF) ---
+            # PDFの1ページ目を画像としてレンダリング
+            pdf_bytes = pdf_buffer.getvalue()
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            page = doc.load_page(0)  # 1ページ目
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 高解像度化
+            img_data = pix.tobytes("png")
+            
+            # --- ダウンロードとプレビュー表示 ---
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                st.success(f"カード計 {len(messages)} 枚")
+                st.download_button(
+                    label="📄 PDFを保存する",
+                    data=pdf_bytes,
+                    file_name="message_cards.pdf",
+                    mime="application/pdf"
+                )
+            
+            with col2:
+                st.image(img_data, caption="1ページ目のプレビュー（印刷イメージ）", use_container_width=True)
+            
+            doc.close()
+    else:
+        st.warning("メッセージを入力してからボタンを押してください。")
 else:
-    st.info("メッセージを入力するとプレビューが表示されます。")
+    st.info("上のボタンを押すとプレビューが表示されます。")
