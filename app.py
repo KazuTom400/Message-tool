@@ -7,7 +7,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 import io
 import re
 import os
-import fitz  # PyMuPDF: PDFを画像に変換するために使用
+import fitz  # PyMuPDF
 
 # --- 1. フォント設定 ---
 FONT_FILE = "ipaexg.ttf" 
@@ -33,19 +33,12 @@ st.title("📇 メッセージカード作成ツール")
 st.sidebar.header("カードサイズ設定 (mm)")
 card_width = st.sidebar.number_input("横幅", min_value=10.0, value=91.0, step=1.0)
 card_height = st.sidebar.number_input("縦幅", min_value=10.0, value=55.0, step=1.0)
-font_size = st.sidebar.number_input("文字サイズ (pt)", min_value=5, value=11, step=1)
+base_font_size = st.sidebar.number_input("基準文字サイズ (pt)", min_value=5, value=12, step=1)
 line_spacing = st.sidebar.number_input("行間", min_value=1.0, value=1.2, step=0.1)
 
-# --- 4. メッセージ入力 ---
-st.header("1. メッセージ入力")
-input_text = st.text_area(
-    "メッセージを入力してください。改行2回（空行）で次のカードに分かれます。",
-    placeholder="田中さん\nお疲れ様でした！\n\n佐藤さん\nいつもありがとうございます。",
-    height=250
-)
-
-# --- 5. 文字の折り返し計算ロジック ---
-def wrap_text(text, max_width_pt, f_name, f_size):
+# --- 4. 文字の折り返し計算関数 ---
+def get_wrapped_lines(text, max_width_pt, f_name, f_size):
+    """指定された幅でテキストを折り返し、行のリストを返す"""
     lines = []
     for paragraph in text.split('\n'):
         current_line = ""
@@ -60,8 +53,8 @@ def wrap_text(text, max_width_pt, f_name, f_size):
         lines.append(current_line)
     return lines
 
-# --- 6. PDF生成関数 ---
-def create_card_pdf(msg_list, w_mm, h_mm, f_size):
+# --- 5. PDF生成関数（自動縮小ロジック付き） ---
+def create_card_pdf(msg_list, w_mm, h_mm, start_f_size):
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     page_w, page_h = A4
@@ -75,20 +68,34 @@ def create_card_pdf(msg_list, w_mm, h_mm, f_size):
     x, y = 0, page_h - h_pt
     margin_pt = 5 * mm 
     max_text_width = w_pt - (margin_pt * 2)
+    max_text_height = h_pt - (margin_pt * 2)
     
     for i, msg in enumerate(msg_list):
         c.setLineWidth(0.2)
         c.rect(x, y, w_pt, h_pt)
-        c.setFont(USED_FONT, f_size)
         
-        display_lines = wrap_text(msg, max_text_width, USED_FONT, f_size)
-        total_text_h = len(display_lines) * f_size * line_spacing
-        start_y = y + (h_pt + total_text_h)/2 - f_size
+        # --- 自動フォント縮小ロジック ---
+        current_f_size = start_f_size
+        min_f_size = 5 # 最小サイズを5ptに設定
+        
+        while current_f_size >= min_f_size:
+            display_lines = get_wrapped_lines(msg, max_text_width, USED_FONT, current_f_size)
+            total_text_h = len(display_lines) * current_f_size * line_spacing
+            
+            # 高さが枠内に収まればループ終了
+            if total_text_h <= max_text_height:
+                break
+            # 収まらなければ1pt小さくして再計算
+            current_f_size -= 1
+
+        c.setFont(USED_FONT, current_f_size)
+        start_y = y + (h_pt + (len(display_lines) * current_f_size * line_spacing))/2 - current_f_size
         
         for idx, line in enumerate(display_lines):
-            line_y = start_y - (idx * f_size * line_spacing)
+            line_y = start_y - (idx * current_f_size * line_spacing)
             c.drawCentredString(x + w_pt/2, line_y, line)
         
+        # 配置移動
         x += w_pt
         if (i + 1) % cols == 0:
             x = 0
@@ -101,40 +108,35 @@ def create_card_pdf(msg_list, w_mm, h_mm, f_size):
     buffer.seek(0)
     return buffer
 
-# --- 7. 作成実行エリア ---
-st.header("2. プレビュー & 保存")
+# --- 6. メイン表示エリア ---
+st.header("1. メッセージ入力")
+input_text = st.text_area("改行2回でカードを分割します", height=200)
 
-# 作成ボタンの設置
+st.header("2. プレビュー & 保存")
 if st.button("🛠️ メッセージカードを作成する", type="primary"):
     if input_text.strip():
         messages = re.split(r'\n{2,}', input_text.strip())
-        pdf_buffer = create_card_pdf(messages, card_width, card_height, font_size)
+        pdf_data = create_card_pdf(messages, card_width, card_height, base_font_size)
         
-        if pdf_buffer:
-            # --- プレビュー用画像変換 (PyMuPDF) ---
-            # PDFの1ページ目を画像としてレンダリング
-            pdf_bytes = pdf_buffer.getvalue()
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            page = doc.load_page(0)  # 1ページ目
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 高解像度化
-            img_data = pix.tobytes("png")
+        if pdf_data:
+            # プレビュー画像生成
+            doc = fitz.open(stream=pdf_data.getvalue(), filetype="pdf")
+            page = doc.load_page(0)
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+            img_bytes = pix.tobytes("png")
+            doc.close()
             
-            # --- ダウンロードとプレビュー表示 ---
-            col1, col2 = st.columns([1, 2])
+            col1, col2 = st.columns([1, 1])
             with col1:
+                st.image(img_bytes, caption="プレビュー（1枚目）")
+            with col2:
                 st.success(f"カード計 {len(messages)} 枚")
                 st.download_button(
                     label="📄 PDFを保存する",
-                    data=pdf_bytes,
+                    data=pdf_data.getvalue(),
                     file_name="message_cards.pdf",
                     mime="application/pdf"
                 )
-            
-            with col2:
-                st.image(img_data, caption="1ページ目のプレビュー（印刷イメージ）", use_container_width=True)
-            
-            doc.close()
+                st.info("【iPhoneの方】保存後、ブラウザの『ダウンロードフォルダ』を確認してください。")
     else:
-        st.warning("メッセージを入力してからボタンを押してください。")
-else:
-    st.info("上のボタンを押すとプレビューが表示されます。")
+        st.warning("メッセージを入力してください。")
