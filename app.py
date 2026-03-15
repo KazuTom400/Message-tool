@@ -18,11 +18,12 @@ def register_font():
         try:
             pdfmetrics.registerFont(TTFont(FONT_NAME, FONT_FILE))
             return True
-        except:
+        except Exception:
             return False
     return False
 
 HAS_FONT = register_font()
+# フォントがない場合は標準のHelveticaを使用（日本語は表示されません）
 USED_FONT = FONT_NAME if HAS_FONT else "Helvetica"
 
 # --- 2. ページ設定 ---
@@ -39,23 +40,23 @@ line_spacing = st.sidebar.number_input("行間", min_value=1.0, value=1.2, step=
 # --- 4. メッセージ入力 ---
 st.header("1. メッセージ入力")
 input_text = st.text_area(
-    "メッセージを入力（改行2回で次のカードへ）",
+    "メッセージを入力してください。改行2回（空行）で次のカードに分かれます。",
     placeholder="田中さん\nお疲れ様でした！\n\n佐藤さん\nいつもありがとうございます。",
     height=250
 )
 
+# 改行2回以上を区切りにする
 messages = re.split(r'\n{2,}', input_text.strip()) if input_text.strip() else []
 
 # --- 5. 文字の折り返し計算ロジック ---
 def wrap_text(text, max_width_pt, f_name, f_size):
-    """フォントサイズとカード幅から、文字を折り返す"""
+    """フォントサイズとカード幅から、物理的な横幅を計算して折り返す"""
     lines = []
-    # ユーザーの改行でまず分ける
     for paragraph in text.split('\n'):
         current_line = ""
         for char in paragraph:
-            # 現在の行に1文字足した時の横幅を計算
             test_line = current_line + char
+            # pdfmetrics.stringWidthで実際の描画幅(pt)を取得
             w = pdfmetrics.stringWidth(test_line, f_name, f_size)
             if w <= max_width_pt:
                 current_line = test_line
@@ -79,7 +80,8 @@ def create_card_pdf(msg_list, w_mm, h_mm, f_size):
         return None
 
     x, y = 0, page_h - h_pt
-    margin_pt = 5 * mm # 左右に最低限の余白(5mm)を確保
+    # カードの端ギリギリだと切れるため、左右に計10mm(片側5mm)の余白を設ける
+    margin_pt = 5 * mm 
     max_text_width = w_pt - (margin_pt * 2)
     
     for i, msg in enumerate(msg_list):
@@ -87,10 +89,10 @@ def create_card_pdf(msg_list, w_mm, h_mm, f_size):
         c.rect(x, y, w_pt, h_pt)
         c.setFont(USED_FONT, f_size)
         
-        # 動的な折り返し処理
+        # 動的な折り返し処理の実行
         display_lines = wrap_text(msg, max_text_width, USED_FONT, f_size)
 
-        # 垂直中央揃え
+        # 垂直中央揃え（行間を考慮した計算）
         total_text_h = len(display_lines) * f_size * line_spacing
         start_y = y + (h_pt + total_text_h)/2 - f_size
         
@@ -117,22 +119,22 @@ if messages:
         st.header("2. プレビュー & 保存")
         st.info(f"合計 {len(messages)} 枚のカードを作成しました。")
         
-        # プレビューが見られない場合のためのダウンロードボタンを強調
+        # 【修正】primary=True を type="primary" に変更
         st.download_button(
-            label="📩 PDFをダウンロードして確認",
-            data=pdf_buffer,
+            label="📄 PDFを保存する",
+            data=pdf_buffer.getvalue(), # getvalue()でバイトデータとして渡す
             file_name="message_cards.pdf",
             mime="application/pdf",
-            primary=True
+            type="primary"
         )
         
-        # プレビュー表示の改善
+        # プレビュー表示の改善（ブラウザによっては表示されない場合があります）
         try:
             base64_pdf = base64.b64encode(pdf_buffer.getvalue()).decode('utf-8')
-            # ChromeやEdgeで表示されやすいようembedタグに変更
-            pdf_display = f'<embed src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600" type="application/pdf">'
+            # プレビューが見られない場合は、iframeの代わりにobjectタグを試す
+            pdf_display = f'<object data="data:application/pdf;base64,{base64_pdf}" width="100%" height="600" type="application/pdf"></object>'
             st.markdown(pdf_display, unsafe_allow_html=True)
-        except Exception as e:
-            st.warning("お使いのブラウザではプレビューを表示できません。上のボタンから保存してください。")
+        except Exception:
+            st.warning("プレビューが読み込めない場合は、上の保存ボタンを押してファイルを確認してください。")
 else:
     st.info("メッセージを入力するとプレビューが表示されます。")
